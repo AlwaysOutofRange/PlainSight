@@ -1,4 +1,4 @@
-(use_declaration argument: (identifier) @name)
-(use_declaration argument: (scoped_identifier path: (_) @path name: (identifier) @name))
-(use_declaration argument: (use_as_clause path: [(identifier) (scoped_identifier)] @path alias: (identifier) @alias))
-(use_declaration argument: (use_wildcard) @wildcard)
+; Just capture the top-level use_declaration node.
+; The parser walks the tree programmatically to handle
+; arbitrary nesting depth (e.g. `use std::{collections::{HashMap, HashSet}}`).
+(use_declaration) @root

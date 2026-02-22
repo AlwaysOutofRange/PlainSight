@@ -1,13 +1,19 @@
 #![allow(dead_code)]
 
-use parser::Parser;
+use std::time::Instant;
 
-use crate::parser::RustSpec;
+use parser::Parser;
+use tokio::io;
+
+use crate::{ollama::OllamaWrapper, parser::RustSpec};
 
 mod file_walker;
+mod ollama;
 mod parser;
+mod project_manager;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     /*
     let walker = FileWalker::with_filter(FilterOptions {
         extensions: vec!["rs", "sh", "toml"],
@@ -21,29 +27,27 @@ fn main() {
     */
 
     let mut parser = Parser::new(RustSpec::new(tree_sitter_rust::LANGUAGE.into()));
-    let result = parser.parse_and_extract(include_str!("main.rs"));
+    let result = parser
+        .parse_and_extract(include_str!("parser/parser.rs"))
+        .unwrap();
 
-    println!("Functions:");
-    for f in &result.functions {
-        println!("  {}({}) -> {:?}", f.name, f.params_text, f.return_type);
-    }
+    let json = serde_json::to_string_pretty(&result)
+        .unwrap()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
 
-    println!("\nTypes:");
-    for t in &result.types {
-        println!("  {} {{", t.name);
-        for field in &t.fields {
-            println!("    {}", field);
-        }
-        println!("  }}");
-    }
+    let wrapper = OllamaWrapper::new();
 
-    println!("\nImports:");
-    for i in &result.imports {
-        println!("  {:#?}", i);
-    }
+    let start = Instant::now();
 
-    println!("\nVariables:");
-    for v in &result.variables {
-        println!("  {:#?}", v);
-    }
+    let full = wrapper
+        .summarize_stream_to(&json, io::stdout())
+        .await
+        .unwrap();
+
+    let elapsed = start.elapsed();
+    println!("\n\n---");
+    println!("Total time: {:.2?}", elapsed);
+    println!("Output length: {} chars", full.len());
 }
