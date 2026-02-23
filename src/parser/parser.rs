@@ -75,6 +75,7 @@ impl<S: LanguageSpec> Parser<S> {
         let mut imports = self.extract_imports(&tree, source)?;
         let mut variables = self.extract_variables(&tree, source)?;
 
+        // Make this cleaner
         let mut seen: HashSet<String> = HashSet::new();
         functions.retain(|f| seen.insert(f.name.clone()));
         seen.clear();

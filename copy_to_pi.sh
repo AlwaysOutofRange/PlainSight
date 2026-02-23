@@ -10,6 +10,7 @@ rsync -avz --progress \
   --exclude 'target/' \
   --exclude 'copy_to_pi.sh' \
   --exclude 'Cargo.lock' \
+  --exclude '.git' \
   "$SRC_DIR" "$DEST_HOST:$DEST_DIR"
 
 echo "Transfer complete."

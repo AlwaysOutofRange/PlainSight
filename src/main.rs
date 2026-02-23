@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use std::time::Instant;
+use std::{fs, path::PathBuf, time::Instant};
 
 use parser::Parser;
 use tokio::io;
 
-use crate::{ollama::OllamaWrapper, parser::RustSpec};
+use crate::{ollama::OllamaWrapper, parser::RustSpec, project_manager::ProjectManager};
 
 mod file_walker;
 mod ollama;
@@ -13,41 +13,69 @@ mod parser;
 mod project_manager;
 
 #[tokio::main]
-async fn main() {
-    /*
-    let walker = FileWalker::with_filter(FilterOptions {
-        extensions: vec!["rs", "sh", "toml"],
-        exclude_directories: vec!["target"],
-    });
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manager = ProjectManager::new(
+        "/home/god/Projects/PlainSight/docs",
+        "plain_sight",
+        "/home/god/Projects/PlainSight",
+    );
 
-    let files = walker.walk(PathBuf::from(".")).unwrap();
-    for file in files {
-        println!("{:#?}", file);
+    manager.ensure_project_structure()?;
+    let mut meta = manager.ensure_meta_exists()?;
+
+    let target_file = PathBuf::from("src/parser/parser.rs");
+
+    if !manager.needs_generation(&target_file, &meta)? {
+        println!(
+            "No changes for '{}'. Skipping generation.",
+            target_file.display()
+        );
+        return Ok(());
     }
-    */
 
+    manager.ensure_file_structure(&target_file)?;
+
+    let source = fs::read_to_string(&target_file)?;
     let mut parser = Parser::new(RustSpec::new(tree_sitter_rust::LANGUAGE.into()));
-    let result = parser
-        .parse_and_extract(include_str!("parser/parser.rs"))
-        .unwrap();
+    let parsed = parser
+        .parse_and_extract(&source)
+        .map_err(std::io::Error::other)?;
 
-    let json = serde_json::to_string_pretty(&result)
-        .unwrap()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-
+    let json = serde_json::to_string_pretty(&parsed)?;
     let wrapper = OllamaWrapper::new();
 
+    println!("Generating summary...");
     let start = Instant::now();
-
-    let full = wrapper
+    let summary = wrapper
         .summarize_stream_to(&json, io::stdout())
         .await
-        .unwrap();
+        .map_err(std::io::Error::other)?;
+    let summary_elapsed = start.elapsed();
 
-    let elapsed = start.elapsed();
+    let summary_path = manager.file_summary_path(&target_file)?;
+    fs::write(&summary_path, &summary)?;
+
+    println!("\n\nGenerating docs...");
+    let docs_start = Instant::now();
+    let docs_path = manager.file_docs_path(&target_file)?;
+    let docs_content = wrapper
+        .document_stream_to(&json, io::stdout())
+        .await
+        .map_err(std::io::Error::other)?;
+    let docs_elapsed = docs_start.elapsed();
+    fs::write(&docs_path, docs_content)?;
+
+    manager.update_file_meta(&target_file, &mut meta)?;
+    manager.save_meta(&meta)?;
+
     println!("\n\n---");
-    println!("Total time: {:.2?}", elapsed);
-    println!("Output length: {} chars", full.len());
+    println!(
+        "Summary time: {:.2?}, Docs time: {:.2?}",
+        summary_elapsed, docs_elapsed
+    );
+    println!("Summary length: {} chars", summary.len());
+    println!("Summary written to: {}", summary_path.display());
+    println!("Docs written to: {}", docs_path.display());
+
+    Ok(())
 }
