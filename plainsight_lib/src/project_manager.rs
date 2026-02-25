@@ -7,10 +7,15 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::PlainSightError;
+use crate::{error::PlainSightError, memory::FileMemory};
 
 #[derive(Debug)]
 pub struct ProjectManager {
+    docs_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectContext {
     docs_root: PathBuf,
     project_name: String,
     project_root: PathBuf,
@@ -21,24 +26,36 @@ pub struct MetaCache {
     pub files: BTreeMap<String, FileMeta>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileMeta {
     pub hash: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub memory: Option<FileMemory>,
 }
 
 impl ProjectManager {
-    pub fn new(
-        docs_root: impl Into<PathBuf>,
-        project_name: impl Into<String>,
-        project_root: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(docs_root: impl Into<PathBuf>) -> Self {
         Self {
             docs_root: docs_root.into(),
+        }
+    }
+
+    pub fn new_project(
+        &self,
+        project_name: impl Into<String>,
+        project_root: impl Into<PathBuf>,
+    ) -> ProjectContext {
+        ProjectContext {
+            docs_root: self.docs_root.clone(),
             project_name: project_name.into(),
             project_root: project_root.into(),
         }
     }
+}
 
+impl ProjectContext {
     pub fn project_docs_path(&self) -> PathBuf {
         self.docs_root.join(&self.project_name)
     }
@@ -158,18 +175,6 @@ impl ProjectManager {
         let docs_exists = self.file_docs_path(file_path.as_ref())?.exists();
 
         Ok(cached_hash != Some(hash.as_str()) || !summary_exists || !docs_exists)
-    }
-
-    pub fn update_file_meta(
-        &self,
-        file_path: impl AsRef<Path>,
-        meta: &mut MetaCache,
-    ) -> Result<(), PlainSightError> {
-        let relative = self.relative_file_path(file_path.as_ref())?;
-        let key = relative.to_string_lossy().to_string();
-        let hash = self.hash_file(file_path)?;
-        meta.files.insert(key, FileMeta { hash });
-        Ok(())
     }
 
     fn relative_file_path(&self, file_path: impl AsRef<Path>) -> Result<PathBuf, PlainSightError> {

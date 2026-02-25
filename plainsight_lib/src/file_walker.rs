@@ -8,14 +8,12 @@ use crate::error::PlainSightError;
 
 #[derive(Debug)]
 pub struct FileInfo {
-    pub name: String,
-    pub size: u64,
     pub path: PathBuf,
 }
 
 pub struct FilterOptions {
-    pub extensions: Vec<&'static str>,
-    pub exclude_directories: Vec<&'static str>,
+    pub extensions: Vec<String>,
+    pub exclude_directories: Vec<String>,
 }
 
 pub struct FileWalker {
@@ -34,7 +32,8 @@ impl FileWalker {
                 && self
                     .filter_options
                     .exclude_directories
-                    .contains(&component_str)
+                    .iter()
+                    .any(|excluded| excluded == component_str)
             {
                 return true;
             }
@@ -68,27 +67,15 @@ impl FileWalker {
                 if path.is_dir() {
                     directory_stack.push_back(path);
                 } else if !self.filter_options.extensions.is_empty()
-                    && self.filter_options.extensions.contains(
-                        &path
+                    && self.filter_options.extensions.iter().any(|ext| {
+                        ext == path
                             .extension()
                             .unwrap_or_default()
                             .to_str()
-                            .unwrap_or_default(),
-                    )
+                            .unwrap_or_default()
+                    })
                 {
                     let file_info = FileInfo {
-                        name: path
-                            .file_name()
-                            .map(|file_name| file_name.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                        size: fs::metadata(path.clone())
-                            .map_err(|e| {
-                                PlainSightError::io(
-                                    format!("reading metadata for '{}'", path.display()),
-                                    e,
-                                )
-                            })?
-                            .len(),
                         path: path.canonicalize().map_err(|e| {
                             PlainSightError::io(format!("canonicalizing '{}'", path.display()), e)
                         })?,

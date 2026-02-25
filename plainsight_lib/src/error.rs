@@ -11,19 +11,6 @@ pub enum PlainSightError {
         source: std::io::Error,
     },
 
-    #[error("parse error: {0}")]
-    Parse(String),
-
-    #[error("failed to load query file '{path}': {source}")]
-    QueryLoad {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to compile '{kind}' query: {detail}")]
-    QueryCompile { kind: String, detail: String },
-
     #[error("ollama error: {0}")]
     Ollama(String),
 
