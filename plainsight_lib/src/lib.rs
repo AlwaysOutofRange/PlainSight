@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::BTreeSet,
     fs,
@@ -8,7 +6,7 @@ use std::{
 };
 
 use parser::Parser;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
@@ -19,15 +17,17 @@ use crate::{
     project_manager::{MetaCache, ProjectManager},
 };
 
-mod error;
-mod file_walker;
-mod ollama;
-mod parser;
-mod project_manager;
+pub mod error;
+pub mod file_walker;
+pub mod ollama;
+pub mod parser;
+pub mod project_manager;
 
-const PROJECT_NAME: &str = "plain_sight";
-const DOCS_ROOT: &str = "/home/outofrange/Projects/PlainSight/docs";
-const PROJECT_ROOT: &str = "/home/outofrange/Projects/PlainSight";
+pub struct PlainSightConfig {
+    pub project_name: String,
+    pub docs_root: PathBuf,
+    pub project_root: PathBuf,
+}
 
 #[derive(Debug, Clone)]
 struct ParsedFile {
@@ -36,18 +36,7 @@ struct ParsedFile {
     json: String,
 }
 
-#[tokio::main]
-async fn main() {
-    init_logging();
-
-    if let Err(err) = run().await {
-        error!(error = %err, "generation failed");
-        eprintln!("Generation failed. See logs for details.");
-        std::process::exit(1);
-    }
-}
-
-fn init_logging() {
+pub fn init_logging() {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -58,42 +47,57 @@ fn init_logging() {
         .init();
 }
 
-async fn run() -> Result<(), PlainSightError> {
-    let manager = ProjectManager::new(DOCS_ROOT, PROJECT_NAME, PROJECT_ROOT);
+pub async fn run(config: &PlainSightConfig) -> Result<(), PlainSightError> {
+    let manager = ProjectManager::new(
+        config.docs_root.to_str().ok_or_else(|| {
+            PlainSightError::InvalidState("docs_root contains non-utf8 characters".to_string())
+        })?,
+        &config.project_name,
+        config.project_root.to_str().ok_or_else(|| {
+            PlainSightError::InvalidState("project_root contains non-utf8 characters".to_string())
+        })?,
+    );
 
-    info!(project = PROJECT_NAME, "ensure_structure");
+    info!(project = %config.project_name, "ensure_structure");
     manager.ensure_project_structure()?;
     let mut meta = manager.ensure_meta_exists()?;
 
-    let files = discover_source_files()?;
+    let files = discover_source_files(config)?;
     if files.is_empty() {
         warn!(
-            project = PROJECT_NAME,
+            project = %config.project_name,
             "no source files found, skipping generation"
         );
         return Ok(());
     }
 
-    let parsed_files = parse_project_files(&files, &manager)?;
+    let parsed_files = parse_project_files(&files, &manager, config)?;
     if parsed_files.is_empty() {
         return Err(PlainSightError::InvalidState(
             "no files could be parsed for documentation generation".to_string(),
         ));
     }
 
-    let project_index_json = build_project_index_json(&parsed_files)?;
+    let project_index_json = build_project_index_json(&config.project_name, &parsed_files)?;
     let wrapper = OllamaWrapper::new();
 
-    generate_summaries(&wrapper, &manager, &parsed_files).await?;
+    generate_summaries(&wrapper, &manager, &config.project_name, &parsed_files).await?;
     unload_tasks(&wrapper, &[Task::Summarize, Task::ProjectSummary]).await;
 
-    generate_docs(&wrapper, &manager, &parsed_files, &project_index_json).await?;
+    generate_docs(
+        &wrapper,
+        &manager,
+        &config.project_name,
+        &parsed_files,
+        &project_index_json,
+    )
+    .await?;
     unload_tasks(&wrapper, &[Task::Documentation, Task::Architecture]).await;
 
     update_meta_for_files(&manager, &mut meta, &parsed_files)?;
 
     info!(
-        project = PROJECT_NAME,
+        project = %config.project_name,
         file_count = parsed_files.len(),
         project_summary_path = %manager.summary_path().display(),
         architecture_path = %manager.architecture_path().display(),
@@ -103,14 +107,14 @@ async fn run() -> Result<(), PlainSightError> {
     Ok(())
 }
 
-fn discover_source_files() -> Result<Vec<PathBuf>, PlainSightError> {
+fn discover_source_files(config: &PlainSightConfig) -> Result<Vec<PathBuf>, PlainSightError> {
     let walker = FileWalker::with_filter(FilterOptions {
         extensions: vec!["rs"],
         exclude_directories: vec![".git", "target", "docs"],
     });
 
     let mut files: Vec<PathBuf> = walker
-        .walk(PathBuf::from(PROJECT_ROOT))?
+        .walk(config.project_root.clone())?
         .into_iter()
         .map(|f| f.path)
         .collect();
@@ -122,12 +126,13 @@ fn discover_source_files() -> Result<Vec<PathBuf>, PlainSightError> {
 fn parse_project_files(
     files: &[PathBuf],
     manager: &ProjectManager,
+    config: &PlainSightConfig,
 ) -> Result<Vec<ParsedFile>, PlainSightError> {
     let mut parser = Parser::new(RustSpec::new(tree_sitter_rust::LANGUAGE.into()))?;
     let mut parsed_files = Vec::new();
 
     for path in files {
-        let relative_path = relative_path_display(path);
+        let relative_path = relative_path_display(path, &config.project_root);
         info!(target_file = %relative_path, "parse_source");
 
         if let Err(err) = manager.ensure_file_structure(path) {
@@ -169,7 +174,10 @@ fn parse_project_files(
     Ok(parsed_files)
 }
 
-fn build_project_index_json(parsed_files: &[ParsedFile]) -> Result<String, PlainSightError> {
+fn build_project_index_json(
+    project_name: &str,
+    parsed_files: &[ParsedFile],
+) -> Result<String, PlainSightError> {
     let mut files = Vec::with_capacity(parsed_files.len());
 
     for parsed in parsed_files {
@@ -187,7 +195,7 @@ fn build_project_index_json(parsed_files: &[ParsedFile]) -> Result<String, Plain
     }
 
     serde_json::to_string_pretty(&serde_json::json!({
-        "project": PROJECT_NAME,
+        "project": project_name,
         "file_count": parsed_files.len(),
         "files": files,
     }))
@@ -197,6 +205,7 @@ fn build_project_index_json(parsed_files: &[ParsedFile]) -> Result<String, Plain
 async fn generate_summaries(
     wrapper: &OllamaWrapper,
     manager: &ProjectManager,
+    project_name: &str,
     parsed_files: &[ParsedFile],
 ) -> Result<(), PlainSightError> {
     info!(file_count = parsed_files.len(), "summary_phase_start");
@@ -244,7 +253,7 @@ async fn generate_summaries(
     let start = Instant::now();
     let summary_context = build_project_summary_context(&file_summaries);
     let project_summary = wrapper
-        .project_summary(PROJECT_NAME, &summary_context)
+        .project_summary(project_name, &summary_context)
         .await
         .map_err(PlainSightError::Ollama)?;
     let elapsed = format_duration(start.elapsed());
@@ -274,6 +283,7 @@ async fn generate_summaries(
 async fn generate_docs(
     wrapper: &OllamaWrapper,
     manager: &ProjectManager,
+    project_name: &str,
     parsed_files: &[ParsedFile],
     project_index_json: &str,
 ) -> Result<(), PlainSightError> {
@@ -315,7 +325,7 @@ async fn generate_docs(
 
     let start = Instant::now();
     let architecture = wrapper
-        .architecture(PROJECT_NAME, project_index_json)
+        .architecture(project_name, project_index_json)
         .await
         .map_err(PlainSightError::Ollama)?;
     let elapsed = format_duration(start.elapsed());
@@ -383,8 +393,8 @@ fn update_meta_for_files(
     manager.save_meta(meta)
 }
 
-fn relative_path_display(path: &Path) -> String {
-    path.strip_prefix(PROJECT_ROOT)
+fn relative_path_display(path: &Path, project_root: &Path) -> String {
+    path.strip_prefix(project_root)
         .unwrap_or(path)
         .display()
         .to_string()

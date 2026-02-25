@@ -1,15 +1,3 @@
-[package]
-name = "plain_sight"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-tree-sitter = "0.26.5"
-tree-sitter-rust = "0.24.0"
-ollama-rs = "0.3.4"
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-thiserror = "2.0.17"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter", "std"] }
+[workspace]
+members = ["plainsight_lib", "plainsight_bin"]
+resolver = "2"

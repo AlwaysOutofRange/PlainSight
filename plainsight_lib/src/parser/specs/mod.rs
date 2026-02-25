@@ -1,6 +1,6 @@
 mod rust;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub use rust::RustSpec;
 use tree_sitter::{Language, Node};
@@ -38,8 +38,8 @@ pub trait LanguageSpec {
     fn id(&self) -> &'static str;
     fn language(&self) -> Language;
 
-    fn query_root(&self) -> &'static Path {
-        Path::new("querys")
+    fn query_root(&self) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("querys")
     }
 
     fn supported_extract_kinds(&self) -> &'static [ExtractKind] {
