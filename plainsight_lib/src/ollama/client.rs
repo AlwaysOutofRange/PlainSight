@@ -15,11 +15,7 @@ use tracing::debug;
 
 use crate::error::{PlainSightError, Result};
 
-use super::{
-    OllamaConfig, Task, prompts,
-    tools::{query_file_source, query_project_memory},
-    utils,
-};
+use super::{OllamaConfig, Task, prompts, tools::*, utils};
 
 pub struct OllamaWrapper {
     client: Ollama,
@@ -52,11 +48,7 @@ impl OllamaWrapper {
             .map_err(|e| PlainSightError::Ollama(format!("failed to list models: {e}")))
     }
 
-    pub async fn generate_for_task(
-        &self,
-        task: Task,
-        prompt: &str,
-    ) -> Result<String> {
+    pub async fn generate_for_task(&self, task: Task, prompt: &str) -> Result<String> {
         self.generate(task, prompt).await
     }
 
@@ -152,11 +144,7 @@ impl OllamaWrapper {
         self.postprocess_output(task, out)
     }
 
-    pub async fn architecture(
-        &self,
-        project_name: &str,
-        context_payload: &str,
-    ) -> Result<String> {
+    pub async fn architecture(&self, project_name: &str, context_payload: &str) -> Result<String> {
         let context =
             utils::prepare_architecture_input(context_payload).map_err(PlainSightError::Ollama)?;
         debug!(
@@ -223,11 +211,7 @@ impl OllamaWrapper {
             })
     }
 
-    async fn generate_with_memory_tool(
-        &self,
-        task: Task,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn generate_with_memory_tool(&self, task: Task, prompt: &str) -> Result<String> {
         let model_cfg = self.config.tasks.for_task(task);
 
         let _permit = match time::timeout(self.config.lock_timeout, self.lock.acquire()).await {
@@ -254,8 +238,8 @@ impl OllamaWrapper {
             Coordinator::new(self.client.clone(), model_cfg.model.clone(), vec![])
                 .options(model_cfg.options())
                 .keep_alive(keep_alive)
-                .add_tool(query_file_source)
-                .add_tool(query_project_memory);
+                .add_tool(file_source_tool)
+                .add_tool(project_memory_tool);
 
         let request = coordinator.chat(vec![ChatMessage::user(prompt.to_string())]);
 
