@@ -3,13 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     config::SourceDiscoveryConfig,
-    error::PlainSightError,
+    error::Result,
     file_walker::{FileWalker, FilterOptions},
-    memory::{self, FileMemory},
+    memory,
     project_manager::{FileMeta, MetaCache, ProjectContext},
     source_indexer,
 };
@@ -19,7 +19,7 @@ use super::types::ParsedFile;
 pub(crate) fn discover_source_files(
     project_root: &Path,
     config: &SourceDiscoveryConfig,
-) -> Result<Vec<PathBuf>, PlainSightError> {
+) -> Result<Vec<PathBuf>> {
     let walker = FileWalker::with_filter(FilterOptions {
         extensions: config.extensions.clone(),
         exclude_directories: config.exclude_directories.clone(),
@@ -39,16 +39,17 @@ pub(crate) fn parse_project_files(
     files: &[PathBuf],
     manager: &ProjectContext,
     project_root: &Path,
-    meta: &MetaCache,
-) -> Result<Vec<ParsedFile>, PlainSightError> {
+) -> Result<Vec<ParsedFile>> {
     let mut parsed_files = Vec::new();
+    let mut skipped_file_count = 0usize;
 
     for path in files {
         let relative_path = relative_path_display(path, project_root);
-        info!(target_file = %relative_path, "index_source");
+        debug!(target_file = %relative_path, "index_source");
 
         if let Err(err) = manager.ensure_file_structure(path) {
             warn!(target_file = %relative_path, error = %err, "failed to ensure file docs structure; skipping file");
+            skipped_file_count += 1;
             continue;
         }
 
@@ -56,6 +57,7 @@ pub(crate) fn parse_project_files(
             Ok(hash) => hash,
             Err(err) => {
                 warn!(target_file = %relative_path, error = %err, "failed hashing source file; skipping file");
+                skipped_file_count += 1;
                 continue;
             }
         };
@@ -64,19 +66,14 @@ pub(crate) fn parse_project_files(
             Ok(source) => source,
             Err(err) => {
                 warn!(target_file = %relative_path, error = %err, "failed reading source file; skipping file");
+                skipped_file_count += 1;
                 continue;
             }
         };
 
         let language = detect_language(path);
         let source_index = source_indexer::build_source_index(&source, language);
-        let file_memory = match cached_file_memory(meta, &relative_path, &hash, language) {
-            Some(memory) => {
-                info!(target_file = %relative_path, "reuse_file_memory");
-                memory
-            }
-            None => memory::build_file_memory(&relative_path, language, &source),
-        };
+        let file_memory = memory::build_file_memory(&relative_path, language, &source);
 
         parsed_files.push(ParsedFile {
             path: path.clone(),
@@ -88,6 +85,13 @@ pub(crate) fn parse_project_files(
         });
     }
 
+    info!(
+        total_files = files.len(),
+        parsed_files = parsed_files.len(),
+        skipped_files = skipped_file_count,
+        "ingest_complete"
+    );
+
     Ok(parsed_files)
 }
 
@@ -95,14 +99,12 @@ pub(crate) fn update_meta_for_files(
     manager: &ProjectContext,
     meta: &mut MetaCache,
     parsed_files: &[ParsedFile],
-) -> Result<(), PlainSightError> {
+) -> Result<()> {
     for parsed in parsed_files {
         meta.files.insert(
             parsed.relative_path.clone(),
             FileMeta {
                 hash: parsed.hash.clone(),
-                language: Some(parsed.language.clone()),
-                memory: Some(parsed.memory.clone()),
             },
         );
     }
@@ -137,20 +139,4 @@ fn relative_path_display(path: &Path, project_root: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-fn cached_file_memory(
-    meta: &MetaCache,
-    relative_path: &str,
-    hash: &str,
-    language: &str,
-) -> Option<FileMemory> {
-    let cached = meta.files.get(relative_path)?;
-    if cached.hash != hash {
-        return None;
-    }
-    if cached.language.as_deref() != Some(language) {
-        return None;
-    }
-    cached.memory.clone()
 }

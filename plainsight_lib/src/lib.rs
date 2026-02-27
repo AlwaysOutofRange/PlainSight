@@ -2,7 +2,11 @@ use std::path::Path;
 
 use tracing_subscriber::EnvFilter;
 
-use crate::{config::PlainSightConfig, error::PlainSightError, project_manager::ProjectManager};
+use crate::{
+    config::PlainSightConfig,
+    error::{PlainSightError, Result},
+    project_manager::ProjectManager,
+};
 
 pub mod config;
 pub mod error;
@@ -19,14 +23,14 @@ pub struct PlainSight {
 }
 
 impl PlainSight {
-    pub fn new(docs_root: impl AsRef<Path>) -> Result<Self, PlainSightError> {
+    pub fn new(docs_root: impl AsRef<Path>) -> Result<Self> {
         Self::with_config(docs_root, PlainSightConfig::default())
     }
 
     pub fn with_config(
         docs_root: impl AsRef<Path>,
         config: PlainSightConfig,
-    ) -> Result<Self, PlainSightError> {
+    ) -> Result<Self> {
         let env_filter =
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
         tracing_subscriber::fmt()
@@ -50,7 +54,7 @@ impl PlainSight {
         &self,
         project_name: &str,
         project_root: &Path,
-    ) -> Result<(), PlainSightError> {
+    ) -> Result<()> {
         workflow::run_with_manager(&self.manager, &self.config, project_name, project_root).await
     }
 

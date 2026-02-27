@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{error::PlainSightError, memory::FileMemory};
+use crate::error::{PlainSightError, Result};
 
 #[derive(Debug)]
 pub struct ProjectManager {
@@ -29,10 +29,6 @@ pub struct MetaCache {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileMeta {
     pub hash: String,
-    #[serde(default)]
-    pub language: Option<String>,
-    #[serde(default)]
-    pub memory: Option<FileMemory>,
 }
 
 impl ProjectManager {
@@ -73,10 +69,10 @@ impl ProjectContext {
     }
 
     pub fn meta_path(&self) -> PathBuf {
-        self.project_root.join(".meta.json")
+        self.project_docs_path().join(".meta.json")
     }
 
-    pub fn file_docs_dir(&self, file_path: impl AsRef<Path>) -> Result<PathBuf, PlainSightError> {
+    pub fn file_docs_dir(&self, file_path: impl AsRef<Path>) -> Result<PathBuf> {
         let relative = self.relative_file_path(file_path)?;
         Ok(self.files_root_path().join(relative))
     }
@@ -84,15 +80,15 @@ impl ProjectContext {
     pub fn file_summary_path(
         &self,
         file_path: impl AsRef<Path>,
-    ) -> Result<PathBuf, PlainSightError> {
+    ) -> Result<PathBuf> {
         Ok(self.file_docs_dir(file_path)?.join("summary.md"))
     }
 
-    pub fn file_docs_path(&self, file_path: impl AsRef<Path>) -> Result<PathBuf, PlainSightError> {
+    pub fn file_docs_path(&self, file_path: impl AsRef<Path>) -> Result<PathBuf> {
         Ok(self.file_docs_dir(file_path)?.join("docs.md"))
     }
 
-    pub fn ensure_project_structure(&self) -> Result<(), PlainSightError> {
+    pub fn ensure_project_structure(&self) -> Result<()> {
         fs::create_dir_all(self.files_root_path())
             .map_err(|e| PlainSightError::io("creating project docs structure", e))?;
         self.ensure_markdown_file(self.summary_path())?;
@@ -103,7 +99,7 @@ impl ProjectContext {
     pub fn ensure_file_structure(
         &self,
         file_path: impl AsRef<Path>,
-    ) -> Result<(), PlainSightError> {
+    ) -> Result<()> {
         let file_dir = self.file_docs_dir(file_path)?;
         fs::create_dir_all(&file_dir).map_err(|e| {
             PlainSightError::io(
@@ -116,13 +112,21 @@ impl ProjectContext {
         Ok(())
     }
 
-    pub fn load_meta(&self) -> Result<MetaCache, PlainSightError> {
+    pub fn load_meta(&self) -> Result<MetaCache> {
         let path = self.meta_path();
+        if path.exists() {
+            return self.read_meta_file(&path);
+        }
+
+        Ok(MetaCache::default())
+    }
+
+    fn read_meta_file(&self, path: &Path) -> Result<MetaCache> {
         if !path.exists() {
             return Ok(MetaCache::default());
         }
 
-        let content = fs::read_to_string(&path).map_err(|e| {
+        let content = fs::read_to_string(path).map_err(|e| {
             PlainSightError::io(format!("reading meta cache '{}'", path.display()), e)
         })?;
 
@@ -134,7 +138,7 @@ impl ProjectContext {
         })
     }
 
-    pub fn save_meta(&self, meta: &MetaCache) -> Result<(), PlainSightError> {
+    pub fn save_meta(&self, meta: &MetaCache) -> Result<()> {
         let content = serde_json::to_string_pretty(meta)
             .map_err(|e| PlainSightError::InvalidState(format!("serializing meta cache: {e}")))?;
         let path = self.meta_path();
@@ -144,7 +148,7 @@ impl ProjectContext {
         Ok(())
     }
 
-    pub fn ensure_meta_exists(&self) -> Result<MetaCache, PlainSightError> {
+    pub fn ensure_meta_exists(&self) -> Result<MetaCache> {
         let meta = self.load_meta()?;
         if !self.meta_path().exists() {
             self.save_meta(&meta)?;
@@ -152,7 +156,7 @@ impl ProjectContext {
         Ok(meta)
     }
 
-    pub fn hash_file(&self, file_path: impl AsRef<Path>) -> Result<String, PlainSightError> {
+    pub fn hash_file(&self, file_path: impl AsRef<Path>) -> Result<String> {
         let path = file_path.as_ref();
         let content = fs::read(path)
             .map_err(|e| PlainSightError::io(format!("hashing file '{}'", path.display()), e))?;
@@ -165,7 +169,7 @@ impl ProjectContext {
         &self,
         file_path: impl AsRef<Path>,
         meta: &MetaCache,
-    ) -> Result<bool, PlainSightError> {
+    ) -> Result<bool> {
         let relative = self.relative_file_path(file_path.as_ref())?;
         let key = relative.to_string_lossy().to_string();
         let hash = self.hash_file(file_path.as_ref())?;
@@ -177,7 +181,7 @@ impl ProjectContext {
         Ok(cached_hash != Some(hash.as_str()) || !summary_exists || !docs_exists)
     }
 
-    fn relative_file_path(&self, file_path: impl AsRef<Path>) -> Result<PathBuf, PlainSightError> {
+    fn relative_file_path(&self, file_path: impl AsRef<Path>) -> Result<PathBuf> {
         let file_path = file_path.as_ref();
         let absolute = if file_path.is_absolute() {
             file_path.to_path_buf()
@@ -194,7 +198,7 @@ impl ProjectContext {
             })
     }
 
-    fn ensure_markdown_file(&self, file_path: PathBuf) -> Result<(), PlainSightError> {
+    fn ensure_markdown_file(&self, file_path: PathBuf) -> Result<()> {
         if !file_path.exists() {
             fs::write(&file_path, "").map_err(|e| {
                 PlainSightError::io(

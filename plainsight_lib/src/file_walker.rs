@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::error::PlainSightError;
+use crate::error::{PlainSightError, Result};
 
 #[derive(Debug)]
 pub struct FileInfo {
@@ -41,7 +41,7 @@ impl FileWalker {
         false
     }
 
-    pub fn walk(&self, path: PathBuf) -> Result<Vec<FileInfo>, PlainSightError> {
+    pub fn walk(&self, path: PathBuf) -> Result<Vec<FileInfo>> {
         let mut directory_stack: VecDeque<PathBuf> = VecDeque::from([path]);
         let mut files: Vec<FileInfo> = Vec::new();
 

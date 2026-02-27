@@ -2,6 +2,7 @@ mod client;
 mod config;
 mod prompts;
 mod task;
+mod tools;
 mod utils;
 
 pub use client::OllamaWrapper;

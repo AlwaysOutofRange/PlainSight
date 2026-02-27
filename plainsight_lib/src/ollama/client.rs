@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use ollama_rs::{
     Ollama,
+    coordinator::Coordinator,
     generation::{
+        chat::ChatMessage,
         completion::request::GenerationRequest,
         parameters::{KeepAlive, TimeUnit},
     },
@@ -11,7 +13,13 @@ use tokio::sync::Semaphore;
 use tokio::time;
 use tracing::debug;
 
-use super::{OllamaConfig, Task, prompts, utils};
+use crate::error::{PlainSightError, Result};
+
+use super::{
+    OllamaConfig, Task, prompts,
+    tools::{query_file_source, query_project_memory},
+    utils,
+};
 
 pub struct OllamaWrapper {
     client: Ollama,
@@ -36,31 +44,39 @@ impl OllamaWrapper {
         &self.config.tasks.for_task(task).model
     }
 
-    pub async fn list_models(&self) -> Result<Vec<String>, String> {
+    pub async fn list_models(&self) -> Result<Vec<String>> {
         self.client
             .list_local_models()
             .await
             .map(|models| models.into_iter().map(|model| model.name).collect())
-            .map_err(|e| format!("failed to list models: {e}"))
+            .map_err(|e| PlainSightError::Ollama(format!("failed to list models: {e}")))
     }
 
-    pub async fn generate_for_task(&self, task: Task, prompt: &str) -> Result<String, String> {
+    pub async fn generate_for_task(
+        &self,
+        task: Task,
+        prompt: &str,
+    ) -> Result<String> {
         self.generate(task, prompt).await
     }
 
-    pub async fn unload_task_model(&self, task: Task) -> Result<(), String> {
+    pub async fn unload_task_model(&self, task: Task) -> Result<()> {
         self.unload_model(self.model_name(task)).await
     }
 
-    pub async fn unload_model(&self, model_name: &str) -> Result<(), String> {
+    pub async fn unload_model(&self, model_name: &str) -> Result<()> {
         let _permit = match time::timeout(self.config.lock_timeout, self.lock.acquire()).await {
             Ok(Ok(permit)) => permit,
-            Ok(Err(e)) => return Err(format!("failed to acquire lock for unload: {e}")),
+            Ok(Err(e)) => {
+                return Err(PlainSightError::Ollama(format!(
+                    "failed to acquire lock for unload: {e}"
+                )));
+            }
             Err(_) => {
-                return Err(format!(
+                return Err(PlainSightError::Ollama(format!(
                     "timeout acquiring lock to unload model {}",
                     model_name
-                ));
+                )));
             }
         };
 
@@ -69,7 +85,10 @@ impl OllamaWrapper {
 
         match time::timeout(self.config.unload_timeout, self.client.generate(request)).await {
             Ok(Ok(_)) => Ok(()),
-            Ok(Err(err)) => Err(format!("failed to unload model ({}): {err}", model_name)),
+            Ok(Err(err)) => Err(PlainSightError::Ollama(format!(
+                "failed to unload model ({}): {err}",
+                model_name
+            ))),
             Err(_) => {
                 debug!(
                     model = model_name,
@@ -81,8 +100,9 @@ impl OllamaWrapper {
         }
     }
 
-    pub async fn summarize(&self, context_payload: &str) -> Result<String, String> {
-        let context = utils::prepare_file_summary_input(context_payload)?;
+    pub async fn summarize(&self, context_payload: &str) -> Result<String> {
+        let context =
+            utils::prepare_file_summary_input(context_payload).map_err(PlainSightError::Ollama)?;
         debug!(
             payload_bytes = context.len(),
             "ollama_summarize_payload_prepared"
@@ -94,12 +114,13 @@ impl OllamaWrapper {
             model = self.model_name(task),
             "ollama_summarize_prompt"
         );
-        let out = self.generate(task, &prompt).await?;
+        let out = self.generate_with_memory_tool(task, &prompt).await?;
         self.postprocess_output(task, out)
     }
 
-    pub async fn document(&self, context_payload: &str) -> Result<String, String> {
-        let context = utils::prepare_file_docs_input(context_payload)?;
+    pub async fn document(&self, context_payload: &str) -> Result<String> {
+        let context =
+            utils::prepare_file_docs_input(context_payload).map_err(PlainSightError::Ollama)?;
         debug!(
             payload_bytes = context.len(),
             "ollama_docs_payload_prepared"
@@ -111,7 +132,7 @@ impl OllamaWrapper {
             model = self.model_name(task),
             "ollama_docs_prompt"
         );
-        let out = self.generate(task, &prompt).await?;
+        let out = self.generate_with_memory_tool(task, &prompt).await?;
         self.postprocess_output(task, out)
     }
 
@@ -119,7 +140,7 @@ impl OllamaWrapper {
         &self,
         project_name: &str,
         file_summaries_context: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String> {
         let task = Task::ProjectSummary;
         let prompt = prompts::build_project_summary_prompt(project_name, file_summaries_context);
         debug!(
@@ -135,8 +156,9 @@ impl OllamaWrapper {
         &self,
         project_name: &str,
         context_payload: &str,
-    ) -> Result<String, String> {
-        let context = utils::prepare_architecture_input(context_payload)?;
+    ) -> Result<String> {
+        let context =
+            utils::prepare_architecture_input(context_payload).map_err(PlainSightError::Ollama)?;
         debug!(
             payload_bytes = context.len(),
             "ollama_arch_payload_prepared"
@@ -152,17 +174,21 @@ impl OllamaWrapper {
         self.postprocess_output(task, out)
     }
 
-    async fn generate(&self, task: Task, prompt: &str) -> Result<String, String> {
+    async fn generate(&self, task: Task, prompt: &str) -> Result<String> {
         let model_cfg = self.config.tasks.for_task(task);
 
         let _permit = match time::timeout(self.config.lock_timeout, self.lock.acquire()).await {
             Ok(Ok(permit)) => permit,
-            Ok(Err(e)) => return Err(format!("failed to acquire lock: {e}")),
+            Ok(Err(e)) => {
+                return Err(PlainSightError::Ollama(format!(
+                    "failed to acquire lock: {e}"
+                )));
+            }
             Err(_) => {
-                return Err(format!(
+                return Err(PlainSightError::Ollama(format!(
                     "timeout acquiring lock for model {}",
                     model_cfg.model
-                ));
+                )));
             }
         };
 
@@ -176,12 +202,15 @@ impl OllamaWrapper {
         if let Some(generate_timeout) = model_cfg.generate_timeout {
             return match time::timeout(generate_timeout, self.client.generate(request)).await {
                 Ok(Ok(response)) => Ok(response.response),
-                Ok(Err(err)) => Err(format!("ollama error ({}): {err}", model_cfg.model)),
-                Err(_) => Err(format!(
+                Ok(Err(err)) => Err(PlainSightError::Ollama(format!(
+                    "ollama error ({}): {err}",
+                    model_cfg.model
+                ))),
+                Err(_) => Err(PlainSightError::Ollama(format!(
                     "ollama error ({}): request timeout after {} seconds - model may have been killed or is in 'Stopping...' state",
                     model_cfg.model,
                     generate_timeout.as_secs()
-                )),
+                ))),
             };
         }
 
@@ -189,12 +218,78 @@ impl OllamaWrapper {
             .generate(request)
             .await
             .map(|response| response.response)
-            .map_err(|err| format!("ollama error ({}): {err}", model_cfg.model))
+            .map_err(|err| {
+                PlainSightError::Ollama(format!("ollama error ({}): {err}", model_cfg.model))
+            })
     }
 
-    fn postprocess_output(&self, task: Task, out: String) -> Result<String, String> {
+    async fn generate_with_memory_tool(
+        &self,
+        task: Task,
+        prompt: &str,
+    ) -> Result<String> {
+        let model_cfg = self.config.tasks.for_task(task);
+
+        let _permit = match time::timeout(self.config.lock_timeout, self.lock.acquire()).await {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(e)) => {
+                return Err(PlainSightError::Ollama(format!(
+                    "failed to acquire lock: {e}"
+                )));
+            }
+            Err(_) => {
+                return Err(PlainSightError::Ollama(format!(
+                    "timeout acquiring lock for model {}",
+                    model_cfg.model
+                )));
+            }
+        };
+
+        let keep_alive = KeepAlive::Until {
+            time: self.config.keep_alive_minutes,
+            unit: TimeUnit::Minutes,
+        };
+
+        let mut coordinator =
+            Coordinator::new(self.client.clone(), model_cfg.model.clone(), vec![])
+                .options(model_cfg.options())
+                .keep_alive(keep_alive)
+                .add_tool(query_file_source)
+                .add_tool(query_project_memory);
+
+        let request = coordinator.chat(vec![ChatMessage::user(prompt.to_string())]);
+
+        if let Some(generate_timeout) = model_cfg.generate_timeout {
+            return match time::timeout(generate_timeout, request).await {
+                Ok(Ok(response)) => Ok(response.message.content),
+                Ok(Err(err)) => Err(PlainSightError::Ollama(format!(
+                    "ollama error ({}): {err}",
+                    model_cfg.model
+                ))),
+                Err(_) => Err(PlainSightError::Ollama(format!(
+                    "ollama error ({}): request timeout after {} seconds - model may have been killed or is in 'Stopping...' state",
+                    model_cfg.model,
+                    generate_timeout.as_secs()
+                ))),
+            };
+        }
+
+        request
+            .await
+            .map(|response| response.message.content)
+            .map_err(|err| {
+                PlainSightError::Ollama(format!("ollama error ({}): {err}", model_cfg.model))
+            })
+    }
+
+    fn postprocess_output(&self, task: Task, out: String) -> Result<String> {
         let out = utils::strip_wrapping_code_fence(out);
+        let out = utils::unwrap_json_markdown(task, out);
+        let out = utils::strip_wrapping_code_fence(out);
+        let out = utils::trim_to_expected_heading(task, out);
+        let out = utils::strip_wrapping_code_fence(out);
+        let out = utils::reject_json_payload(out).map_err(PlainSightError::Ollama)?;
         let out = utils::ensure_ai_disclaimer(out);
-        utils::ensure_non_empty(task, self.model_name(task), out)
+        utils::ensure_non_empty(task, self.model_name(task), out).map_err(PlainSightError::Ollama)
     }
 }
