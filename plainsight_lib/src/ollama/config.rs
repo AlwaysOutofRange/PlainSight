@@ -4,7 +4,7 @@ use ollama_rs::models::ModelOptions;
 
 use super::Task;
 
-const DEFAULT_MODEL: &str = "phi4-mini:3.8b";
+const DEFAULT_MODEL: &str = "phi4-mini-reasoning:lastest";
 
 #[derive(Debug, Clone)]
 pub struct TaskConfig {
